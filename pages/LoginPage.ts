@@ -26,6 +26,7 @@ export class LoginPage extends BasePage {
 
   async goto(): Promise<void> {
     await this.navigate('/');
+    //checking
   }
 
   async login(username: string, password: string): Promise<void> {
