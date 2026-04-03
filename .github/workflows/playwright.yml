@@ -1,0 +1,233 @@
+name: SDET Playwright — CI Pipeline
+
+on:
+  push:
+    branches: [main, develop, 'release/**']
+  pull_request:
+    branches: [main, develop]
+  schedule:
+    # Run full regression nightly at 2AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      test_suite:
+        description: 'Test suite to run'
+        required: true
+        default: 'smoke'
+        type: choice
+        options:
+          - smoke
+          - regression
+          - api
+          - e2e
+          - all
+
+env:
+  NODE_VERSION: '20'
+  BASE_URL: ${{ vars.BASE_URL || 'https://www.saucedemo.com' }}
+  API_BASE_URL: ${{ vars.API_BASE_URL || 'https://reqres.in/api' }}
+
+jobs:
+
+  # ─── Install & Cache ──────────────────────────────────────────────────────
+  setup:
+    name: Setup Dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Cache Playwright browsers
+        id: cache-playwright
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Install Playwright browsers
+        if: steps.cache-playwright.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps
+
+  # ─── Lint ─────────────────────────────────────────────────────────────────
+  lint:
+    name: TypeScript Lint
+    needs: setup
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run lint
+
+  # ─── API Tests ────────────────────────────────────────────────────────────
+  api-tests:
+    name: API Tests
+    needs: setup
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      - run: npm ci
+
+      - name: Restore Playwright cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Run API tests
+        run: npm run test:api
+        env:
+          API_BASE_URL: ${{ env.API_BASE_URL }}
+
+      - name: Upload API test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: api-test-results
+          path: |
+            reports/
+            test-results/
+          retention-days: 14
+
+  # ─── UI Tests (Matrix: Chrome, Firefox, Safari) ───────────────────────────
+  ui-tests:
+    name: UI Tests — ${{ matrix.browser }}
+    needs: setup
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox, webkit]
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      - run: npm ci
+
+      - name: Restore Playwright cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Install Playwright (if cache miss)
+        run: npx playwright install --with-deps ${{ matrix.browser }}
+
+      - name: Run UI tests — ${{ matrix.browser }}
+        run: npx playwright test tests/ui --project=${{ matrix.browser }}
+        env:
+          BASE_URL: ${{ env.BASE_URL }}
+          TEST_USERNAME: ${{ secrets.TEST_USERNAME || 'standard_user' }}
+          TEST_PASSWORD: ${{ secrets.TEST_PASSWORD || 'secret_sauce' }}
+
+      - name: Upload UI test results — ${{ matrix.browser }}
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-test-results-${{ matrix.browser }}
+          path: |
+            reports/
+            test-results/
+          retention-days: 14
+
+  # ─── E2E Tests ────────────────────────────────────────────────────────────
+  e2e-tests:
+    name: E2E Tests
+    needs: [api-tests, ui-tests]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      - run: npm ci
+
+      - name: Restore Playwright cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Run E2E tests
+        run: npm run test:e2e
+        env:
+          BASE_URL: ${{ env.BASE_URL }}
+          API_BASE_URL: ${{ env.API_BASE_URL }}
+          TEST_USERNAME: ${{ secrets.TEST_USERNAME || 'standard_user' }}
+          TEST_PASSWORD: ${{ secrets.TEST_PASSWORD || 'secret_sauce' }}
+
+      - name: Upload E2E test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-test-results
+          path: |
+            reports/
+            test-results/
+          retention-days: 14
+
+  # ─── Publish HTML Report to GitHub Pages ─────────────────────────────────
+  publish-report:
+    name: Publish Test Report
+    needs: [api-tests, ui-tests, e2e-tests]
+    runs-on: ubuntu-latest
+    if: always()
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Download all test artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all-results
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+
+      - name: Upload to GitHub Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: all-results
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  # ─── Notify on Failure ────────────────────────────────────────────────────
+  notify:
+    name: Notify on Failure
+    needs: [api-tests, ui-tests, e2e-tests]
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify Slack on failure
+        uses: 8398a7/action-slack@v3
+        with:
+          status: failure
+          text: '🚨 QA Automation Pipeline FAILED on ${{ github.ref }}'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        continue-on-error: true
