@@ -25,11 +25,19 @@ export const test = base.extend<CustomFixtures>({
   },
 
   apiClient: async ({ request }, use) => {
+    const apiKey = process.env.API_KEY || process.env.REQRES_API_KEY;
+    if (!apiKey) {
+      throw new Error(
+        'API_KEY environment variable is required for reqres.in requests. Set API_KEY or REQRES_API_KEY with a valid x-api-key value.'
+      );
+    }
+
     const client = new ApiClient(
       request,
       process.env.API_BASE_URL || 'https://reqres.in/api',
       {
         'Content-Type': 'application/json',
+        'x-api-key': apiKey,
       }
     );
     await use(client);
