@@ -5,9 +5,9 @@ on:
     branches: [main, develop, 'release/**']
   pull_request:
     branches: [main, develop]
-  schedule:
+  #schedule:
     # Run full regression nightly at 2AM UTC
-    - cron: '0 2 * * *'
+   # - cron: '0 2 * * *'
   workflow_dispatch:
     inputs:
       test_suite:
